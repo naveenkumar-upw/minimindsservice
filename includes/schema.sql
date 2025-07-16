@@ -16,5 +16,12 @@ CREATE TABLE IF NOT EXISTS stories (
     country VARCHAR(100),
     state VARCHAR(100),
     images TEXT,
+    read_time INTEGER,
     FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS device_tokens (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    device_token VARCHAR(255) NOT NULL UNIQUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
