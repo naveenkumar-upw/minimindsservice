@@ -1,16 +1,5 @@
 <?php
 include '../includes/db.php';
-require_once '../includes/auth.php';
-
-// Initialize session and check authentication
-initSession();
-$currentUser = requireAuth();
-
-// This page is admin-only
-if ($currentUser['role'] !== 'super_admin') {
-    header('Location: index.php');
-    exit;
-}
 
 // Fetch all device tokens
 $result = $conn->query("SELECT device_token, created_at FROM device_tokens ORDER BY created_at DESC");
@@ -20,7 +9,7 @@ $result = $conn->query("SELECT device_token, created_at FROM device_tokens ORDER
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Device Tokens - MiniMinds Service (Admin)</title>
+    <title>1Device Tokens - MiniMinds Service</title>
     <link rel="stylesheet" href="../assets/style.css">
     <style>
         .status-bar {
@@ -61,10 +50,10 @@ $result = $conn->query("SELECT device_token, created_at FROM device_tokens ORDER
     </style>
 </head>
 <body>
-    <?php include '../includes/header.php'; ?>
+    
 
     <div class="container">
-        <h1>Device Tokens (Admin Only)</h1>
+        <h1>Device Tokens</h1>
 
         <div class="status-bar">
             <div class="auto-refresh">
@@ -74,7 +63,7 @@ $result = $conn->query("SELECT device_token, created_at FROM device_tokens ORDER
             <div>Last refreshed: <span id="last-refresh">just now</span></div>
         </div>
 
-    <?php if ($result->num_rows > 0): ?>
+    
     <div class="table-responsive">
         <table>
             <thead>
@@ -84,20 +73,13 @@ $result = $conn->query("SELECT device_token, created_at FROM device_tokens ORDER
                 </tr>
             </thead>
             <tbody>
-                <?php while($row = $result->fetch_assoc()): ?>
-                    <tr>
-                        <td><?php echo htmlspecialchars($row['device_token']); ?></td>
-                        <td class="datetime"><?php echo $row['created_at'] ? date('Y-m-d H:i:s', strtotime($row['created_at'])) : 'N/A'; ?></td>
-                    </tr>
-                <?php endwhile; ?>
             </tbody>
         </table>
     </div>
-    <?php else: ?>
+    
         <div class="table-empty">
             <p>No device tokens registered</p>
         </div>
-    <?php endif; ?>
     </div>
 
     <script>

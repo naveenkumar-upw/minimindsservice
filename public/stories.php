@@ -1,90 +1,122 @@
 <?php
 include '../includes/db.php';
-include '../includes/firebase/config.php';
+require_once '../includes/auth.php';
 
-// Fetch categories for dropdown
-$cat_result = $conn->query("SELECT * FROM categories");
-$categories = [];
-while($row = $cat_result->fetch_assoc()) $categories[] = $row;
+// Initialize session and check authentication
+initSession();
+$currentUser = requireAuth();
 
-// Handle Add Story
-if (isset($_POST['add_story'])) {
-    $title = $conn->real_escape_string($_POST['title']);
-    $content = $conn->real_escape_string($_POST['content']);
-    $category_id = (int)$_POST['category_id'];
-    $language = $conn->real_escape_string($_POST['language']);
-    $country = $conn->real_escape_string($_POST['country']);
-    $state = $conn->real_escape_string($_POST['state']);
-    $read_time = (int)$_POST['read_time'];
-    $images = [];
-    if (isset($_FILES['images']) && is_array($_FILES['images']['name'])) {
-        $uploadDir = '../assets/uploads/';
-        foreach ($_FILES['images']['name'] as $key => $name) {
-            if ($_FILES['images']['error'][$key] === UPLOAD_ERR_OK) {
-                $fileType = strtolower(pathinfo($name, PATHINFO_EXTENSION));
-                $allowedTypes = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
-                if (in_array($fileType, $allowedTypes)) {
-                    $fileName = uniqid('story_', true) . '_' . basename($name);
-                    $targetFile = $uploadDir . $fileName;
-                    if (move_uploaded_file($_FILES['images']['tmp_name'][$key], $targetFile)) {
-                        $images[] = 'assets/uploads/' . $fileName;
-                    }
-                }
-            }
-        }
-    }
-    $imagesStr = $conn->real_escape_string(implode(',', $images));
-    if($conn->query("INSERT INTO stories (category_id, title, content, language, country, state, images, read_time) VALUES ($category_id, '$title', '$content', '$language', '$country', '$state', '$imagesStr', $read_time)")) {
-        // Send push notification for new story
-        notifyNewStory($title);
-        header('Location: ' . $_SERVER['PHP_SELF']);
-        exit();
-    }
+// Check if user has admin privileges
+$isAdmin = in_array($currentUser['role'], ['admin', 'super_admin']);
+if (!$isAdmin) {
+    header('Location: index.php');
+    exit;
 }
 
-// Handle Delete Story
-if (isset($_GET['delete'])) {
-    $id = (int)$_GET['delete'];
-    $conn->query("DELETE FROM stories WHERE id=$id");
+// Get filter parameters
+$filters = [
+    'category_id' => isset($_GET['category_id']) ? (int)$_GET['category_id'] : 0,
+    'language' => isset($_GET['language']) ? $_GET['language'] : '',
+    'min_age' => isset($_GET['min_age']) ? (int)$_GET['min_age'] : 0,
+    'max_age' => isset($_GET['max_age']) ? (int)$_GET['max_age'] : 100,
+    'read_time_min' => isset($_GET['read_time_min']) ? (int)$_GET['read_time_min'] : 0,
+    'read_time_max' => isset($_GET['read_time_max']) ? (int)$_GET['read_time_max'] : 1000,
+    'country' => isset($_GET['country']) ? $_GET['country'] : '',
+    'state' => isset($_GET['state']) ? $_GET['state'] : '',
+    'date_from' => isset($_GET['date_from']) ? $_GET['date_from'] : '',
+    'date_to' => isset($_GET['date_to']) ? $_GET['date_to'] : ''
+];
+
+// Get success message if any
+$success_message = isset($_SESSION['success_message']) ? $_SESSION['success_message'] : '';
+unset($_SESSION['success_message']);
+
+// Build WHERE clause based on filters
+$where_clauses = [];
+$params = [];
+
+if ($filters['category_id']) {
+    $where_clauses[] = "stories.category_id = ?";
+    $params[] = $filters['category_id'];
 }
 
-// Handle Edit Story
-if (isset($_POST['edit_story'])) {
-    $id = (int)$_POST['id'];
-    $title = $conn->real_escape_string($_POST['title']);
-    $content = $conn->real_escape_string($_POST['content']);
-    $category_id = (int)$_POST['category_id'];
-    $language = $conn->real_escape_string($_POST['language']);
-    $country = $conn->real_escape_string($_POST['country']);
-    $state = $conn->real_escape_string($_POST['state']);
-    $read_time = (int)$_POST['read_time'];
-    $images = [];
-    if (isset($_FILES['images']) && is_array($_FILES['images']['name'])) {
-        $uploadDir = '../assets/uploads/';
-        foreach ($_FILES['images']['name'] as $key => $name) {
-            if ($_FILES['images']['error'][$key] === UPLOAD_ERR_OK) {
-                $fileType = strtolower(pathinfo($name, PATHINFO_EXTENSION));
-                $allowedTypes = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
-                if (in_array($fileType, $allowedTypes)) {
-                    $fileName = uniqid('story_', true) . '_' . basename($name);
-                    $targetFile = $uploadDir . $fileName;
-                    if (move_uploaded_file($_FILES['images']['tmp_name'][$key], $targetFile)) {
-                        $images[] = 'assets/uploads/' . $fileName;
-                    }
-                }
-            }
-        }
-    }
-    $imagesStr = '';
-    if (count($images) > 0) {
-        $imagesStr = $conn->real_escape_string(implode(',', $images));
-        $conn->query("UPDATE stories SET category_id=$category_id, title='$title', content='$content', language='$language', country='$country', state='$state', images='$imagesStr', read_time=$read_time WHERE id=$id");
-    } else {
-        $conn->query("UPDATE stories SET category_id=$category_id, title='$title', content='$content', language='$language', country='$country', state='$state', read_time=$read_time WHERE id=$id");
-    }
+if ($filters['language']) {
+    $where_clauses[] = "stories.language = ?";
+    $params[] = $filters['language'];
 }
 
-$stories = $conn->query("SELECT stories.*, categories.name as category FROM stories JOIN categories ON stories.category_id=categories.id");
+if ($filters['min_age'] > 0) {
+    $where_clauses[] = "stories.min_age >= ?";
+    $params[] = $filters['min_age'];
+}
+
+if ($filters['max_age'] < 100) {
+    $where_clauses[] = "stories.max_age <= ?";
+    $params[] = $filters['max_age'];
+}
+
+if ($filters['read_time_min'] > 0) {
+    $where_clauses[] = "stories.read_time >= ?";
+    $params[] = $filters['read_time_min'];
+}
+
+if ($filters['read_time_max'] < 1000) {
+    $where_clauses[] = "stories.read_time <= ?";
+    $params[] = $filters['read_time_max'];
+}
+
+if ($filters['country']) {
+    $where_clauses[] = "stories.country LIKE ?";
+    $params[] = "%" . $filters['country'] . "%";
+}
+
+if ($filters['state']) {
+    $where_clauses[] = "stories.state LIKE ?";
+    $params[] = "%" . $filters['state'] . "%";
+}
+
+if ($filters['date_from']) {
+    $where_clauses[] = "stories.created >= ?";
+    $params[] = $filters['date_from'] . " 00:00:00";
+}
+
+if ($filters['date_to']) {
+    $where_clauses[] = "stories.created <= ?";
+    $params[] = $filters['date_to'] . " 23:59:59";
+}
+
+// Construct final query
+$where_sql = $where_clauses ? "WHERE " . implode(" AND ", $where_clauses) : "";
+$query = "SELECT stories.*, categories.name as category 
+          FROM stories 
+          JOIN categories ON stories.category_id=categories.id 
+          $where_sql 
+          ORDER BY stories.lastUpdated DESC";
+
+// Prepare and execute query
+$stmt = $conn->prepare($query);
+if ($params) {
+    $stmt->bind_param(str_repeat('s', count($params)), ...$params);
+}
+$stmt->execute();
+$stories = $stmt->get_result();
+
+// Fetch all categories for filter dropdown
+$categories = $conn->query("SELECT * FROM categories ORDER BY name");
+
+// Fetch all languages
+$languages_query = $conn->query("SELECT DISTINCT language FROM stories WHERE language != '' ORDER BY language");
+$languages = [];
+while ($lang = $languages_query->fetch_assoc()) {
+    $languages[] = $lang['language'];
+}
+
+// Fetch sections for each story
+$story_sections = [];
+$sections_result = $conn->query("SELECT * FROM story_sections ORDER BY story_id, sequence_number");
+while ($section = $sections_result->fetch_assoc()) {
+    $story_sections[$section['story_id']][] = $section;
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -93,279 +125,203 @@ $stories = $conn->query("SELECT stories.*, categories.name as category FROM stor
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Stories - MiniMinds Service</title>
     <link rel="stylesheet" href="../assets/style.css">
-    <style>
-        .form-container {
-            background: #fff;
-            padding: 1.5rem;
-            margin-bottom: 1.5rem;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px var(--shadow);
-        }
-        .form-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-            gap: 1rem;
-            align-items: start;
-        }
-        textarea {
-            min-height: 100px;
-            resize: vertical;
-        }
-        .image-preview {
-            display: flex;
-            gap: 0.5rem;
-            flex-wrap: wrap;
-        }
-        .image-preview img {
-            object-fit: cover;
-            border-radius: 4px;
-            box-shadow: 0 1px 3px var(--shadow);
-        }
-        .edit-form {
-            background: var(--light);
-            padding: 1rem;
-            margin-top: 1rem;
-            border-radius: 4px;
-        }
-        .edit-form button[type="submit"] {
-            margin-top: 1rem;
-        }
-        .actions {
-            display: flex;
-            gap: 0.5rem;
-            flex-wrap: wrap;
-        }
-        .btn-delete {
-            padding: 4px 8px;
-            background: var(--danger);
-            color: white;
-            border-radius: 4px;
-            font-size: 0.875rem;
-        }
-        .btn-delete:hover {
-            background-color: #c82333;
-            color: white;
-        }
-        .btn-edit {
-            padding: 4px 8px;
-            background: var(--secondary);
-            color: white;
-            border-radius: 4px;
-            font-size: 0.875rem;
-        }
-        .btn-edit:hover {
-            background-color: #545b62;
-            color: white;
-        }
-        .collapse {
-            display: none;
-        }
-        .collapse.show {
-            display: block;
-        }
-        .loading {
-            opacity: 0.7;
-            pointer-events: none;
-        }
-    </style>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
+
 </head>
 <body>
     <?php include '../includes/header.php'; ?>
     
     <div class="container">
-        <h1>Stories</h1>
+        <?php if ($success_message): ?>
+            <div class="alert alert-success">
+                <?= htmlspecialchars($success_message) ?>
+            </div>
+        <?php endif; ?>
 
-        <div class="filters">
-            <form id="filter-form" class="filters-grid">
-                <div class="form-group">
-                    <select id="filter-category" onchange="applyFilters()">
-                        <option value="">All Categories</option>
-                        <?php foreach($categories as $cat): ?>
-                            <option value="<?= htmlspecialchars($cat['name']) ?>"><?= htmlspecialchars($cat['name']) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <select id="filter-language" onchange="applyFilters()">
-                        <option value="">All Languages</option>
-                        <?php
-                        $languages = [];
-                        $result = $conn->query("SELECT DISTINCT language FROM stories ORDER BY language");
-                        while($row = $result->fetch_assoc()) {
-                            echo "<option value='" . htmlspecialchars($row['language']) . "'>" . htmlspecialchars($row['language']) . "</option>";
-                        }
-                        ?>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <select id="filter-country" onchange="applyFilters()">
-                        <option value="">All Countries</option>
-                        <?php
-                        $result = $conn->query("SELECT DISTINCT country FROM stories ORDER BY country");
-                        while($row = $result->fetch_assoc()) {
-                            echo "<option value='" . htmlspecialchars($row['country']) . "'>" . htmlspecialchars($row['country']) . "</option>";
-                        }
-                        ?>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <select id="filter-readtime" onchange="applyFilters()">
-                        <option value="">All Read Times</option>
-                        <option value="0-5">0-5 minutes</option>
-                        <option value="5-10">5-10 minutes</option>
-                        <option value="10+">10+ minutes</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <button type="button" onclick="resetFilters()">Reset Filters</button>
-                </div>
-            </form>
+        <div class="header-actions">
+            <h1>Stories</h1>
+            <?php if ($isAdmin): ?>
+                <a href="add_story.php" class="btn btn-primary">
+                    <i class="fas fa-plus"></i> Add New Story
+                </a>
+            <?php endif; ?>
         </div>
 
-    <div class="form-container">
-        <form method="POST" enctype="multipart/form-data" class="form-grid">
-            <input type="text" name="title" placeholder="Story Title" required>
-            <input type="number" name="read_time" placeholder="Read Time (minutes)" required min="1">
-            <input type="text" name="language" placeholder="Language" required>
-            <input type="text" name="country" placeholder="Country" required>
-            <input type="text" name="state" placeholder="State" required>
-            <select name="category_id" required>
-                <option value="">Select Category</option>
-                <?php foreach($categories as $cat): ?>
-                    <option value="<?= htmlspecialchars($cat['id']) ?>"><?= htmlspecialchars($cat['name']) ?></option>
-                <?php endforeach; ?>
-            </select>
-            <div style="grid-column: 1 / -1;">
-                <textarea name="content" placeholder="Content" required></textarea>
-            </div>
-            <div style="grid-column: 1 / -1;">
-                <input type="file" name="images[]" accept="image/*" multiple required>
-            </div>
-            <div style="grid-column: 1 / -1;">
-                <button type="submit" name="add_story">Add Story</button>
-            </div>
-        </form>
-    </div>
-
-    <div class="table-responsive">
-        <table>
-            <thead>
-            <tr>
-                <th>ID</th>
-                <th>Title</th>
-                <th>Category</th>
-                <th>Content</th>
-                <th>Read Time</th>
-                <th>Language</th>
-                <th>Country</th>
-                <th>State</th>
-                <th>Images</th>
-                <th>Actions</th>
-            </tr>
-        </thead>
-        <tbody>
-            <?php while($row = $stories->fetch_assoc()): ?>
-            <tr>
-                <td><?= htmlspecialchars($row['id']) ?></td>
-                <td><?= htmlspecialchars($row['title']) ?></td>
-                <td><?= htmlspecialchars($row['category']) ?></td>
-                <td><div class="text-truncate"><?= htmlspecialchars($row['content']) ?></div></td>
-                <td><?= htmlspecialchars($row['read_time']) ?> min</td>
-                <td><?= htmlspecialchars($row['language']) ?></td>
-                <td><?= htmlspecialchars($row['country']) ?></td>
-                <td><?= htmlspecialchars($row['state']) ?></td>
-                <td class="image-preview">
-                    <?php if (!empty($row['images'])): ?>
-                        <?php foreach (explode(',', $row['images']) as $img): ?>
-                            <img src="../<?= htmlspecialchars(trim($img)) ?>" alt="Story Image" style="max-width:40px;max-height:40px;">
-                        <?php endforeach; ?>
-                    <?php endif; ?>
-                </td>
-                <td>
-                    <div class="actions">
-                        <a href="?delete=<?= urlencode($row['id']) ?>" class="btn-delete" onclick="return confirm('Are you sure you want to delete this story?')">Delete</a>
-                        <a href="#" class="btn-edit" onclick="toggleEdit(<?= $row['id'] ?>)">Edit</a>
-                    </div>
-                    <form method="POST" enctype="multipart/form-data" class="edit-form collapse" id="edit-form-<?= $row['id'] ?>">
-                        <input type="hidden" name="id" value="<?= htmlspecialchars($row['id']) ?>">
-                        <div class="form-grid">
-                            <input type="text" name="title" value="<?= htmlspecialchars($row['title']) ?>" required>
-                            <input type="number" name="read_time" value="<?= htmlspecialchars($row['read_time']) ?>" required min="1">
-                            <input type="text" name="language" value="<?= htmlspecialchars($row['language']) ?>" required>
-                            <input type="text" name="country" value="<?= htmlspecialchars($row['country']) ?>" required>
-                            <input type="text" name="state" value="<?= htmlspecialchars($row['state']) ?>" required>
-                            <select name="category_id" required>
-                                <?php foreach($categories as $cat): ?>
-                                    <option value="<?= htmlspecialchars($cat['id']) ?>" <?= $cat['id']==$row['category_id']?'selected':'' ?>><?= htmlspecialchars($cat['name']) ?></option>
+        <div class="table-responsive">
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Title</th>
+                        <th>Category</th>
+                        <th>Cover Image</th>
+                        <th>Content</th>
+                        <th>Read Time</th>
+                        <th>Language</th>
+                        <th>Country</th>
+                        <th>State</th>
+                        <th>Age Range</th>
+                        <th>Moral</th>
+                        <th>Moral Explanation</th>
+                        <th>Distractors</th>
+                        <th>Likes</th>
+                        <th>Shares</th>
+                        <th>Updated</th>
+                        <th>Created</th>
+                        <?php if ($isAdmin): ?>
+                        <th>Actions</th>
+                        <?php endif; ?>
+                    </tr>
+                    <tr>
+                        <form id="filterForm" method="GET">
+                        <td></td>
+                        <td></td>
+                        <td>
+                            <select name="category_id" class="form-control" style="min-width: 120px;">
+                                <option value="">All</option>
+                                <?php $catRes = $conn->query("SELECT * FROM categories ORDER BY name"); while($category = $catRes->fetch_assoc()): ?>
+                                    <option value="<?= $category['id'] ?>" <?= $filters['category_id'] == $category['id'] ? 'selected' : '' ?>><?= htmlspecialchars($category['name']) ?></option>
+                                <?php endwhile; ?>
+                            </select>
+                        </td>
+                        <td></td>
+                        <td></td>
+                        <td>
+                            <input type="number" name="read_time_min" class="form-control" placeholder="Min" value="<?= $filters['read_time_min'] ?>" min="0" style="width: 60px; display:inline-block;"> -
+                            <input type="number" name="read_time_max" class="form-control" placeholder="Max" value="<?= $filters['read_time_max'] ?>" min="0" style="width: 60px; display:inline-block;">
+                        </td>
+                        <td>
+                            <select name="language" class="form-control" style="min-width: 100px;">
+                                <option value="">All</option>
+                                <?php foreach($languages as $lang): ?>
+                                    <option value="<?= $lang ?>" <?= $filters['language'] === $lang ? 'selected' : '' ?>><?= htmlspecialchars($lang) ?></option>
                                 <?php endforeach; ?>
                             </select>
-                            <div style="grid-column: 1 / -1;">
-                                <textarea name="content" required><?= htmlspecialchars($row['content']) ?></textarea>
-                            </div>
-                            <div style="grid-column: 1 / -1;">
-                                <input type="file" name="images[]" accept="image/*" multiple>
-                            </div>
-                            <div style="grid-column: 1 / -1;">
-                                <button type="submit" name="edit_story">Update</button>
-                            </div>
-                        </div>
-                    </form>
-                </td>
-            </tr>
-            <?php endwhile; ?>
-        </tbody>
-    </table>
-    </div>
+                        </td>
+                        <td><input type="text" name="country" class="form-control" value="<?= htmlspecialchars($filters['country']) ?>" placeholder="Country" style="width: 90px;"></td>
+                        <td><input type="text" name="state" class="form-control" value="<?= htmlspecialchars($filters['state']) ?>" placeholder="State" style="width: 90px;"></td>
+                        <td>
+                            <input type="number" name="min_age" class="form-control" placeholder="Min" value="<?= $filters['min_age'] ?>" min="0" max="100" style="width: 50px; display:inline-block;"> -
+                            <input type="number" name="max_age" class="form-control" placeholder="Max" value="<?= $filters['max_age'] ?>" min="0" max="100" style="width: 50px; display:inline-block;">
+                        </td>
+                        <td></td>
+                        <td></td>
+                        <td></td>
+                        <td></td>
+                        <td></td>
+                        <td></td>
+                        <td></td>
+                        <?php if ($isAdmin): ?><td>
+                            <button type="submit" class="btn btn-primary" style="padding: 0.2rem 0.7rem; font-size: 0.95rem;"><i class="fas fa-filter"></i></button>
+                            <button type="button" class="btn btn-secondary" style="padding: 0.2rem 0.7rem; font-size: 0.95rem;" onclick="resetFilters()"><i class="fas fa-undo"></i></button>
+                        </td><?php endif; ?>
+                        </form>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php if ($stories->num_rows === 0): ?>
+                        <tr>
+                            <td colspan="<?= $isAdmin ? '14' : '13' ?>" style="text-align: center;">
+                                No stories found matching the selected filters.
+                            </td>
+                        </tr>
+                    <?php else: ?>
+                        <?php while($row = $stories->fetch_assoc()): ?>
+                            <tr>
+                                <td><?= htmlspecialchars($row['id']) ?></td>
+                                <td><?= htmlspecialchars($row['title']) ?></td>
+                                <td><?= htmlspecialchars($row['category']) ?></td>
+                                <td>
+                                    <?php if ($row['coverImageUrl']): ?>
+                                        <img src="../<?= htmlspecialchars($row['coverImageUrl']) ?>" alt="Cover Image" style="max-width:100px;max-height:100px;">
+                                    <?php endif; ?>
+                                </td>
+                                <td>
+                                    <?php if (isset($story_sections[$row['id']])): ?>
+                                        <?php foreach ($story_sections[$row['id']] as $section): ?>
+                                            <div class="section-preview">
+                                                <strong>Section <?= htmlspecialchars($section['sequence_number']) ?>:</strong>
+                                                <div class="text-truncate"><?= htmlspecialchars($section['content'] ?: '(No text)') ?></div>
+                                                <?php if ($section['image']): ?>
+                                                    <img src="../<?= htmlspecialchars($section['image']) ?>" alt="Section Image" style="max-width:40px;max-height:40px;">
+                                                <?php endif; ?>
+                                            </div>
+                                        <?php endforeach; ?>
+                                    <?php endif; ?>
+                                </td>
+                                <td><?= htmlspecialchars($row['read_time']) ?> min</td>
+                                <td><?= htmlspecialchars($row['language']) ?></td>
+                                <td><?= htmlspecialchars($row['country']) ?></td>
+                                <td><?= htmlspecialchars($row['state']) ?></td>
+                                <td><?= htmlspecialchars($row['min_age']) ?>-<?= htmlspecialchars($row['max_age']) ?></td>
+                                <td><?= htmlspecialchars($row['moral']) ?></td>
+                                <td><?= htmlspecialchars($row['moralExplanation']) ?></td>
+                                <td><?= htmlspecialchars(implode(", ", json_decode($row['distractors'] ?? '[]', true) ?: [])) ?></td>
+                                <td><?= htmlspecialchars($row['likes']) ?></td>
+                                <td><?= htmlspecialchars($row['shares']) ?></td>
+                                <td><?= date('M j, Y', strtotime($row['lastUpdated'])) ?></td>
+                                <td><?= date('M j, Y', strtotime($row['created'])) ?></td>
+                                <?php if ($isAdmin): ?>
+                                <td>
+                                    <div class="actions">
+                                        <a href="edit_story.php?id=<?= urlencode($row['id']) ?>" class="btn btn-secondary">
+                                            <i class="fas fa-edit"></i> Edit
+                                        </a>
+                                        <a href="?delete=<?= urlencode($row['id']) ?>" class="btn btn-danger" onclick="return confirm('Are you sure you want to delete this story?')">
+                                            <i class="fas fa-trash"></i> Delete
+                                        </a>
+                                    </div>
+                                </td>
+                                <?php endif; ?>
+                            </tr>
+                        <?php endwhile; ?>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
     </div>
 
     <script>
-    function toggleEdit(id) {
-        const form = document.getElementById(`edit-form-${id}`);
-        form.classList.toggle('show');
-    }
-
-    function applyFilters() {
-        const category = document.getElementById('filter-category').value.toLowerCase();
-        const language = document.getElementById('filter-language').value.toLowerCase();
-        const country = document.getElementById('filter-country').value.toLowerCase();
-        const readtime = document.getElementById('filter-readtime').value;
-
-        document.querySelectorAll('tbody tr').forEach(row => {
-            const rowCategory = row.children[2].textContent.toLowerCase();
-            const rowLanguage = row.children[5].textContent.toLowerCase();
-            const rowCountry = row.children[6].textContent.toLowerCase();
-            const rowReadTime = parseInt(row.children[4].textContent);
-
-            let showRow = true;
-
-            if (category && rowCategory !== category) showRow = false;
-            if (language && rowLanguage !== language) showRow = false;
-            if (country && rowCountry !== country) showRow = false;
-            
-            if (readtime) {
-                if (readtime === '0-5' && rowReadTime > 5) showRow = false;
-                else if (readtime === '5-10' && (rowReadTime <= 5 || rowReadTime > 10)) showRow = false;
-                else if (readtime === '10+' && rowReadTime <= 10) showRow = false;
-            }
-
-            row.style.display = showRow ? '' : 'none';
+        // Toggle filter panel
+        const filterToggle = document.getElementById('filterToggle');
+        const filterForm = document.getElementById('filterForm');
+        
+        filterToggle.addEventListener('click', function() {
+            filterForm.style.display = filterForm.style.display === 'none' ? 'block' : 'none';
+            this.classList.toggle('collapsed');
         });
-    }
 
-    function resetFilters() {
-        document.getElementById('filter-category').value = '';
-        document.getElementById('filter-language').value = '';
-        document.getElementById('filter-country').value = '';
-        document.getElementById('filter-readtime').value = '';
-        document.querySelectorAll('tbody tr').forEach(row => row.style.display = '');
-    }
+        // Reset filters
+        function resetFilters() {
+            const form = document.getElementById('filterForm');
+            const inputs = form.querySelectorAll('input, select');
+            inputs.forEach(input => {
+                if (input.type === 'number') {
+                    input.value = input.min || '0';
+                } else {
+                    input.value = '';
+                }
+            });
+            form.submit();
+        }
 
-    // Add loading state to forms
-    document.querySelectorAll('form').forEach(form => {
-        form.addEventListener('submit', function() {
+        // Remove individual filter
+        function removeFilter(key) {
+            const input = document.querySelector(`[name="${key}"]`);
+            if (input) {
+                if (input.type === 'number') {
+                    input.value = input.min || '0';
+                } else {
+                    input.value = '';
+                }
+                document.getElementById('filterForm').submit();
+            }
+        }
+
+        // Add loading state to form
+        document.getElementById('filterForm').addEventListener('submit', function() {
             this.classList.add('loading');
         });
-    });
     </script>
 </body>
 </html>
